@@ -2,7 +2,7 @@
 """
 import os
 
-from botocore.exceptions import ClientError, ParamValidationError
+# from botocore.exceptions import ClientError, ParamValidationError
 from io_storages.s3.models import S3ExportStorage, S3ImportStorage
 from io_storages.serializers import ExportStorageSerializer, ImportStorageSerializer
 from rest_framework import serializers
@@ -36,25 +36,11 @@ class S3ImportStorageSerializer(ImportStorageSerializer):
             storage = self.Meta.model(**data)
         try:
             storage.validate_connection()
-        except ParamValidationError:
-            raise ValidationError('Wrong credentials for S3 {bucket_name}'.format(bucket_name=storage.bucket))
-        except ClientError as e:
-            if (
-                e.response.get('Error').get('Code') in ['SignatureDoesNotMatch', '403']
-                or e.response.get('ResponseMetadata').get('HTTPStatusCode') == 403
-            ):
-                raise ValidationError(
-                    'Cannot connect to S3 {bucket_name} with specified AWS credentials'.format(
-                        bucket_name=storage.bucket
-                    )
-                )
-            if (
-                e.response.get('Error').get('Code') in ['NoSuchBucket', '404']
-                or e.response.get('ResponseMetadata').get('HTTPStatusCode') == 404
-            ):
-                raise ValidationError('Cannot find bucket {bucket_name} in S3'.format(bucket_name=storage.bucket))
+
         except TypeError as e:
             raise ValidationError(f'It seems access keys are incorrect: {e}')
+        except Exception as e:
+            raise ValidationError(f'It seems some thing are incorrect: {e}')
         return data
 
 

@@ -16,7 +16,7 @@ def get_storage_list():
     return [
         {
             'name': 's3',
-            'title': 'AWS S3',
+            'title': 'HCSO OBS',
             'import_list_api': S3ImportStorageListAPI,
             'export_list_api': S3ExportStorageListAPI,
         },

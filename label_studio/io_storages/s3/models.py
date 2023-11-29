@@ -4,7 +4,7 @@ import json
 import logging
 import re
 
-import boto3
+# import boto3
 from core.feature_flags import flag_set
 from core.redis import start_job_async_or_sync
 from django.conf import settings
@@ -26,8 +26,8 @@ from tasks.validation import ValidationError as TaskValidationError
 from label_studio.io_storages.s3.utils import AWS
 
 logger = logging.getLogger(__name__)
-logging.getLogger('botocore').setLevel(logging.CRITICAL)
-boto3.set_stream_logger(level=logging.INFO)
+# logging.getLogger('botocore').setLevel(logging.CRITICAL)
+# boto3.set_stream_logger(level=logging.INFO)
 
 clients_cache = {}
 
@@ -57,6 +57,8 @@ class S3StorageMixin(models.Model):
         cache_key = f'{self.aws_access_key_id}:{self.aws_secret_access_key}:{self.aws_session_token}:{self.region_name}:{self.s3_endpoint}'
         if cache_key in clients_cache:
             return clients_cache[cache_key]
+        
+        print(cache_key)
 
         result = get_client_and_resource(
             self.aws_access_key_id,
@@ -69,35 +71,30 @@ class S3StorageMixin(models.Model):
         return result
 
     def get_client(self):
-        client, _ = self.get_client_and_resource()
+        client = self.get_client_and_resource()
         return client
 
-    def get_client_and_bucket(self, validate_connection=True):
-        client, s3 = self.get_client_and_resource()
-        if validate_connection:
-            self.validate_connection(client)
-        return client, s3.Bucket(self.bucket)
+    # def get_client_and_bucket(self, validate_connection=True):
+    #     client, s3 = self.get_client_and_resource()
+    #     if validate_connection:
+    #         self.validate_connection(client)
+    #     return client, s3.Bucket(self.bucket)
 
     def validate_connection(self, client=None):
         logger.debug('validate_connection')
         if client is None:
             client = self.get_client()
-        # TODO(jo): add check for write access for .*Export.* classes
-        is_export = 'Export' in self.__class__.__name__
-        if self.prefix:
-            logger.debug(
-                f'[Class {self.__class__.__name__}]: Test connection to bucket {self.bucket} with prefix {self.prefix} using ListObjectsV2 operation'
-            )
-            result = client.list_objects_v2(Bucket=self.bucket, Prefix=self.prefix, MaxKeys=1)
-            # We expect 1 key with the prefix for imports. For exports it's okay if there are 0 with the prefix.
-            expected_keycount = 0 if is_export else 1
-            if (keycount := result.get('KeyCount')) is None or keycount < expected_keycount:
-                raise KeyError(f'{self.url_scheme}://{self.bucket}/{self.prefix} not found.')
-        else:
-            logger.debug(
-                f'[Class {self.__class__.__name__}]: Test connection to bucket {self.bucket} using HeadBucket operation'
-            )
-            client.head_bucket(Bucket=self.bucket)
+        logger.debug(
+            f'[Class {self.__class__.__name__}]: Test connection to bucket {self.bucket} '
+        )
+        result = client.getBucketMetadata(bucketName=self.bucket)
+        if result.get('status')!=200:
+            logger.error(result)
+            raise KeyError(
+                f'Test connection to bucket {self.bucket} error: code({result.status}),message({result.reason})'
+                )
+            
+
 
     @property
     def path_full(self):
@@ -114,7 +111,7 @@ class S3StorageMixin(models.Model):
 
 class S3ImportStorageBase(S3StorageMixin, ImportStorage):
 
-    url_scheme = 's3'
+    url_scheme = 'obs'
 
     presign = models.BooleanField(_('presign'), default=True, help_text='Generate presigned URLs')
     presign_ttl = models.PositiveSmallIntegerField(
@@ -125,14 +122,15 @@ class S3ImportStorageBase(S3StorageMixin, ImportStorage):
     )
 
     def iterkeys(self):
-        client, bucket = self.get_client_and_bucket()
+        client = self.get_client()
         if self.prefix:
             list_kwargs = {'Prefix': self.prefix.rstrip('/') + '/'}
             if not self.recursive_scan:
                 list_kwargs['Delimiter'] = '/'
-            bucket_iter = bucket.objects.filter(**list_kwargs).all()
+            # bucket_iter = bucket.objects.filter(**list_kwargs).all()
+            bucket_iter = client.listObjects(bucketName=self.bucket)
         else:
-            bucket_iter = bucket.objects.all()
+            bucket_iter = client.listObjects(bucketName=self.bucket)
         regex = re.compile(str(self.regex_filter)) if self.regex_filter else None
         for obj in bucket_iter:
             key = obj.key
@@ -162,9 +160,8 @@ class S3ImportStorageBase(S3StorageMixin, ImportStorage):
             return {data_key: uri}
 
         # read task json from bucket and validate it
-        _, s3 = self.get_client_and_resource()
-        bucket = s3.Bucket(self.bucket)
-        obj = s3.Object(bucket.name, key).get()['Body'].read().decode('utf-8')
+        client = self.get_client_and_resource()
+        obj = client.getObject(self.bucket, key).body.read().decode('utf-8')
         value = json.loads(obj)
         if not isinstance(value, dict):
             raise ValueError(f'Error on key {key}: For S3 your JSON file must be a dictionary with one task')
@@ -197,7 +194,7 @@ class S3ImportStorage(ProjectStorageMixin, S3ImportStorageBase):
 
 class S3ExportStorage(S3StorageMixin, ExportStorage):
     def save_annotation(self, annotation):
-        client, s3 = self.get_client_and_resource()
+        client = self.get_client_and_resource()
         logger.debug(f'Creating new object on {self.__class__.__name__} Storage {self} for annotation {annotation}')
         ser_annotation = self._get_serialized_data(annotation)
 
@@ -218,13 +215,14 @@ class S3ExportStorage(S3StorageMixin, ExportStorage):
             else:
                 additional_params['ServerSideEncryption'] = 'AES256'
 
-        s3.Object(self.bucket, key).put(Body=json.dumps(ser_annotation), **additional_params)
+        # client.Object(self.bucket, key).put(Body=json.dumps(ser_annotation), **additional_params)
+        client.putContent(bucketName=self.bucket, objectKey=key, content=json.dumps(ser_annotation))
 
         # create link if everything ok
         S3ExportStorageLink.create(annotation, self)
 
     def delete_annotation(self, annotation):
-        client, s3 = self.get_client_and_resource()
+        client = self.get_client_and_resource()
         logger.debug(f'Deleting object on {self.__class__.__name__} Storage {self} for annotation {annotation}')
 
         # get key that identifies this object in storage
@@ -232,7 +230,8 @@ class S3ExportStorage(S3StorageMixin, ExportStorage):
         key = str(self.prefix) + '/' + key if self.prefix else key
 
         # delete object from storage
-        s3.Object(self.bucket, key).delete()
+        # s3.Object(self.bucket, key).delete()
+        client.deleteObject(bucketName=self.bucket, objectKey=key)
 
         # delete link if everything ok
         S3ExportStorageLink.objects.filter(storage=self, annotation=annotation).delete()
