@@ -25,11 +25,6 @@ def get_client_and_resource(
         f'secret key={aws_secret_access_key[:4] + "..." if aws_secret_access_key else None}, '
         f'session token={aws_session_token}'
     )
-    print(
-        f'Create obs session with '
-        f'access key id={aws_access_key_id}, '
-        f'secret key={aws_secret_access_key[:4] + "..." if aws_secret_access_key else None}, '
-    )
     # session = boto3.Session(
     #     aws_access_key_id=aws_access_key_id,
     #     aws_secret_access_key=aws_secret_access_key,

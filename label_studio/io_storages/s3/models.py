@@ -57,8 +57,6 @@ class S3StorageMixin(models.Model):
         cache_key = f'{self.aws_access_key_id}:{self.aws_secret_access_key}:{self.aws_session_token}:{self.region_name}:{self.s3_endpoint}'
         if cache_key in clients_cache:
             return clients_cache[cache_key]
-        
-        print(cache_key)
 
         result = get_client_and_resource(
             self.aws_access_key_id,
@@ -128,12 +126,13 @@ class S3ImportStorageBase(S3StorageMixin, ImportStorage):
             if not self.recursive_scan:
                 list_kwargs['Delimiter'] = '/'
             # bucket_iter = bucket.objects.filter(**list_kwargs).all()
-            bucket_iter = client.listObjects(bucketName=self.bucket)
+            bucket_iter = client.listObjects(bucketName=self.bucket,prefix=self.prefix)
         else:
             bucket_iter = client.listObjects(bucketName=self.bucket)
         regex = re.compile(str(self.regex_filter)) if self.regex_filter else None
-        for obj in bucket_iter:
-            key = obj.key
+        iter = bucket_iter.body.get('contents')
+        for obj in iter:
+            key = obj.get('key')
             if key.endswith('/'):
                 logger.debug(key + ' is skipped because it is a folder')
                 continue
@@ -161,7 +160,7 @@ class S3ImportStorageBase(S3StorageMixin, ImportStorage):
 
         # read task json from bucket and validate it
         client = self.get_client_and_resource()
-        obj = client.getObject(self.bucket, key).body.read().decode('utf-8')
+        obj = client.getObject(self.bucket, key,loadStreamInMemory=True).body.buffer
         value = json.loads(obj)
         if not isinstance(value, dict):
             raise ValueError(f'Error on key {key}: For S3 your JSON file must be a dictionary with one task')
