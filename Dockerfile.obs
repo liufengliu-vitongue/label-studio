@@ -1,0 +1,6 @@
+FROM heartexlabs/label-studio:latest
+
+COPY --chown=1001:0 ./label_studio/io_storages/s3 ./label_studio/io_storages/s3
+COPY --chown=1001:0 ./label_studio/io_storages/functions.py ./label_studio/io_storages/functions.py
+
+RUN pip3 install esdk-obs-python==3.23.9.1
