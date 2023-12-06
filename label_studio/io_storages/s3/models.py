@@ -3,7 +3,8 @@
 import json
 import logging
 import re
-
+import pandas
+from io import StringIO
 # import boto3
 from core.feature_flags import flag_set
 from core.redis import start_job_async_or_sync
@@ -24,6 +25,9 @@ from tasks.models import Annotation
 from tasks.validation import ValidationError as TaskValidationError
 
 from label_studio.io_storages.s3.utils import AWS
+
+from webhooks.models import WebhookAction
+from webhooks.utils import emit_webhooks_for_instance
 
 logger = logging.getLogger(__name__)
 # logging.getLogger('botocore').setLevel(logging.CRITICAL)
@@ -140,9 +144,103 @@ class S3ImportStorageBase(S3StorageMixin, ImportStorage):
                 logger.debug(key + ' is skipped by regex filter')
                 continue
             yield key
+    
+    def _scan_and_create_links(self, link_class):
+        """
+        If file is json return one task,if file is csv return task list,else others return file url to task
+        """
+        # set in progress status for storage info
+        self.info_set_in_progress()
+
+        tasks_existed = tasks_created = 0
+        maximum_annotations = self.project.maximum_annotations
+        task = self.project.tasks.order_by('-inner_id').first()
+        max_inner_id = (task.inner_id + 1) if task else 1
+
+        tasks_for_webhook = []
+        for key in self.iterkeys():
+            # w/o Dataflow
+            # pubsub.push(topic, key)
+            # -> GF.pull(topic, key) + env -> add_task()
+            logger.debug(f'Scanning key {key}')
+            self.info_update_progress(last_sync_count=tasks_created, tasks_existed=tasks_existed)
+
+            # skip if task already exists
+            if link_class.exists(key, self):
+                logger.debug(f'{self.__class__.__name__} link {key} already exists')
+                tasks_existed += 1  # update progress counter
+                continue
+
+            logger.debug(f'{self}: found new key {key}')
+            try:
+                data = self.get_data(key)
+            except (UnicodeDecodeError, json.decoder.JSONDecodeError) as exc:
+                logger.debug(exc, exc_info=True)
+                raise ValueError(
+                    f'Error loading JSON from file "{key}".\nIf you\'re trying to import non-JSON data '
+                    f'(images, audio, text, etc.), edit storage settings and enable '
+                    f'"Treat every bucket object as a source file"'
+                )
+
+            is_csv = data.get('is_csv', False)
+            if is_csv:
+                # Decode bytes to string
+                decoded_str = data["data"].decode('utf-8')
+
+                # Use pandas to read the CSV data
+                df = pandas.read_csv(StringIO(decoded_str))
+                # df_table=df.to_json(orient ='table')
+                df_table=df.to_dict('records')
+                for row in df_table:
+                    dict_row ={
+                        "data":row
+                    }
+                    task = self.add_task(dict_row, self.project, maximum_annotations, max_inner_id, self, key, link_class)
+                    max_inner_id += 1
+
+                    # update progress counters for storage info
+                    tasks_created += 1
+
+                    # add task to webhook list
+                    tasks_for_webhook.append(task)
+                        
+            else:
+                task = self.add_task(data, self.project, maximum_annotations, max_inner_id, self, key, link_class)
+                max_inner_id += 1
+
+                # update progress counters for storage info
+                tasks_created += 1
+
+                # add task to webhook list
+                tasks_for_webhook.append(task)
+
+            # settings.WEBHOOK_BATCH_SIZE
+            # `WEBHOOK_BATCH_SIZE` sets the maximum number of tasks sent in a single webhook call, ensuring manageable payload sizes.
+            # When `tasks_for_webhook` accumulates tasks equal to/exceeding `WEBHOOK_BATCH_SIZE`, they're sent in a webhook via
+            # `emit_webhooks_for_instance`, and `tasks_for_webhook` is cleared for new tasks.
+            # If tasks remain in `tasks_for_webhook` at process end (less than `WEBHOOK_BATCH_SIZE`), they're sent in a final webhook
+            # call to ensure all tasks are processed and no task is left unreported in the webhook.
+            if len(tasks_for_webhook) >= settings.WEBHOOK_BATCH_SIZE:
+                emit_webhooks_for_instance(
+                    self.project.organization, self.project, WebhookAction.TASKS_CREATED, tasks_for_webhook
+                )
+                tasks_for_webhook = []
+        if tasks_for_webhook:
+            emit_webhooks_for_instance(
+                self.project.organization, self.project, WebhookAction.TASKS_CREATED, tasks_for_webhook
+            )
+
+        self.project.update_tasks_states(
+            maximum_annotations_changed=False, overlap_cohort_percentage_changed=False, tasks_number_changed=True
+        )
+
+        # sync is finished, set completed status for storage info
+        self.info_set_completed(last_sync_count=tasks_created, tasks_existed=tasks_existed)
+
 
     def scan_and_create_links(self):
         return self._scan_and_create_links(S3ImportStorageLink)
+    
 
     def _get_validated_task(self, parsed_data, key):
         """Validate parsed data with labeling config and task structure"""
@@ -161,12 +259,19 @@ class S3ImportStorageBase(S3StorageMixin, ImportStorage):
         # read task json from bucket and validate it
         client = self.get_client_and_resource()
         obj = client.getObject(self.bucket, key,loadStreamInMemory=True).body.buffer
-        value = json.loads(obj)
-        if not isinstance(value, dict):
-            raise ValueError(f'Error on key {key}: For S3 your JSON file must be a dictionary with one task')
+        if uri.endswith(".csv"):
+            value={
+                "is_csv":True,
+                "data":obj
+            }
+            return value
+        else:
+            value = json.loads(obj)
+            if not isinstance(value, dict):
+                raise ValueError(f'Error on key {key}: For S3 your JSON file must be a dictionary with one task')
 
-        value = self._get_validated_task(value, key)
-        return value
+            value = self._get_validated_task(value, key)
+            return value
 
     def generate_http_url(self, url):
         return resolve_s3_url(url, self.get_client(), self.presign, expires_in=self.presign_ttl * 60)
