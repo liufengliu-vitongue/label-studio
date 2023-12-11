@@ -1,5 +1,5 @@
 FROM heartexlabs/label-studio:latest
-
+COPY --chown=1001:0 ./label_studio/io_storages/migrations/0017_s3exportstorage_is_export_csv.py ./label_studio/io_storages/migrations/0017_s3exportstorage_is_export_csv.py
 COPY --chown=1001:0 ./label_studio/io_storages/s3 ./label_studio/io_storages/s3
 COPY --chown=1001:0 ./label_studio/io_storages/functions.py ./label_studio/io_storages/functions.py
 
