@@ -130,6 +130,10 @@ ExportStorage:
       - width: 345
         fields:
           - type: toggle
+            name: is_export_csv
+            label: If export csv list
+            description: If unchecked, annotations will be export to storage one task one json file, else will export csv format 100000 tasks one csv file
+          - type: toggle
             name: can_delete_objects
             label: Can delete objects from storage
             description: If unchecked, annotations will not be deleted from storage

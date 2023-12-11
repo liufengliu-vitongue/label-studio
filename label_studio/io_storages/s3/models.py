@@ -1,5 +1,7 @@
 """This file and its contents are licensed under the Apache License 2.0. Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
 """
+import os
+import hashlib
 import json
 import logging
 import re
@@ -28,6 +30,17 @@ from label_studio.io_storages.s3.utils import AWS
 
 from webhooks.models import WebhookAction
 from webhooks.utils import emit_webhooks_for_instance
+from tasks.models import Task
+from data_export.models import DataExport
+from core.utils.common import batch
+from data_export.serializers import (
+    ExportDataSerializer
+)
+from data_export.api import ExportAPI
+from label_studio_converter.exports import csv2
+from label_studio_converter.converter import Converter
+from datetime import datetime
+import time
 
 logger = logging.getLogger(__name__)
 # logging.getLogger('botocore').setLevel(logging.CRITICAL)
@@ -297,6 +310,9 @@ class S3ImportStorage(ProjectStorageMixin, S3ImportStorageBase):
 
 
 class S3ExportStorage(S3StorageMixin, ExportStorage):
+    is_export_csv = models.BooleanField(
+        _('is_export_csv'), null=True, blank=True, help_text='Export csv to storage enabled'
+    )
     def save_annotation(self, annotation):
         client = self.get_client_and_resource()
         logger.debug(f'Creating new object on {self.__class__.__name__} Storage {self} for annotation {annotation}')
@@ -324,6 +340,108 @@ class S3ExportStorage(S3StorageMixin, ExportStorage):
 
         # create link if everything ok
         S3ExportStorageLink.create(annotation, self)
+        
+    @staticmethod
+    def generate_export_file(project, tasks):
+        # prepare for saving
+        now = datetime.now()
+        data = json.dumps(tasks, ensure_ascii=False)
+        md5 = hashlib.md5(json.dumps(data).encode('utf-8')).hexdigest()   # nosec
+        name = 'project-' + str(project.id) + '-at-' + now.strftime('%Y-%m-%d-%H-%M') + f'-{md5[0:8]}'
+
+        input_json = DataExport.save_export_files(project, now, {}, data, md5, name)
+        sep = ','
+        
+    
+        start_time = time.time()
+        logger.debug('Convert CSV started')
+
+        # these keys are always presented
+        keys = {'annotator', 'annotation_id', 'created_at', 'updated_at', 'lead_time'}
+
+        # make 2 passes: the first pass is to get keys, otherwise we can't write csv without headers
+        converter = Converter(
+            config=project.get_parsed_config(),
+            project_dir=None,
+            upload_dir=os.path.join(settings.MEDIA_ROOT, settings.UPLOAD_DIR),
+            download_resources=None,
+        )
+        item_iterator = converter.iter_from_json_file
+        logger.debug('Prepare column names for CSV ...')
+        for item in item_iterator(json_file=input_json):
+            record = csv2.prepare_annotation_keys(item=item)
+            keys.update(record)
+
+        # the second pass is to write records to csv
+        logger.debug(
+            f'Prepare done in {time.time()-start_time:0.2f} sec. Write CSV rows now ...'
+        )
+        index=0
+        csv_content=""
+        key_list=[]
+        for key in keys:
+            if index==0:
+                index+=1
+            else:
+                csv_content+=sep
+            csv_content+='"'+key+'"'
+            key_list.append(key)
+        csv_content+='\n'
+        line_num=0
+        for item in item_iterator(input_json):
+            line_num+=1
+
+            record = csv2.prepare_annotation(item)
+            df=pandas.DataFrame(record,index=[0],columns=key_list)
+            index=0
+            line=df.to_csv(index=False,header=False)
+            csv_content+=line
+
+        logger.debug(f'CSV conversion finished in {time.time()-start_time:0.2f} sec')
+        return csv_content,name,line_num
+        
+
+    
+    def save_all_annotations(self):
+        annotation_exported = 0
+        total_annotations = Annotation.objects.filter(project=self.project).count()
+        self.info_set_in_progress()
+        # export csv file
+        if self.is_export_csv:
+            query = Task.objects.filter(project=self.project)
+            task_ids = query.values_list('id', flat=True)
+
+            logger.debug('Serialize tasks for export')
+            for _task_ids in batch(task_ids, 10000):
+                query_set= query.filter(id__in=_task_ids)
+                tasks = ExportDataSerializer(
+                    # ExportAPI.get_task_queryset(queryset=query_set),
+                    query_set.select_related('project').prefetch_related('annotations', 'predictions'),
+                    many=True,
+                    expand=['drafts'],
+                    context={'interpolate_key_frames': None},
+                ).data
+                logger.debug('Prepare export files')
+                
+                csv_content,file_name,line_num= self.generate_export_file(self.project, tasks)
+                
+                client = self.get_client_and_resource()
+                # get key that identifies this object in storage
+                key = str(self.prefix) + '/' + file_name+".csv"
+                client.putContent(bucketName=self.bucket, objectKey=key, content=csv_content)
+                annotation_exported += line_num
+                self.info_update_progress(last_sync_count=annotation_exported, total_annotations=total_annotations)
+        
+        # export json file
+        else:
+            for annotation in Annotation.objects.filter(project=self.project):
+                self.save_annotation(annotation)
+
+                # update progress counters
+                annotation_exported += 1
+                self.info_update_progress(last_sync_count=annotation_exported, total_annotations=total_annotations)
+
+        self.info_set_completed(last_sync_count=annotation_exported, total_annotations=total_annotations)
 
     def delete_annotation(self, annotation):
         client = self.get_client_and_resource()
@@ -346,6 +464,9 @@ def async_export_annotation_to_s3_storages(annotation):
     if hasattr(project, 'io_storages_s3exportstorages'):
         for storage in project.io_storages_s3exportstorages.all():
             logger.debug(f'Export {annotation} to S3 storage {storage}')
+            # if this storage setting that export csv enable, skip to sync json file to storage.
+            if storage.is_export_csv:
+                break
             storage.save_annotation(annotation)
 
 
