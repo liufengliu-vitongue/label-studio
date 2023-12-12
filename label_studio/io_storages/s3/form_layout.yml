@@ -9,7 +9,7 @@ title_bucket_prefix: &title_bucket_prefix
     required: true
   - type: text
     name: prefix
-    label: Bucket Prefix(Drictor)
+    label: Bucket Prefix(Directory)
 
 # 2x3 grid
 aws_params_import: &aws_params_import
