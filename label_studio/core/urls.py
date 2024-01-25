@@ -34,7 +34,7 @@ open_api_info = openapi.Info(
     title='Label Studio API',
     default_version='v' + versions['release'],
     contact=openapi.Contact(url='https://labelstud.io'),
-    x_logo={'url': '../../static/icons/logo-black.svg'},
+    x_logo={'url': '../../static/images/label_studio_logo.png'},
 )
 
 private_schema_view = get_schema_view(
