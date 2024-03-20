@@ -5,13 +5,14 @@
   background linear-gradient(45deg, #a5ce78 0%, #0c746a 85%) no-repeat
 
   &__body
+    position relative
     flex 1
     display flex
     margin 0 5px 5px
     min-width calc(100% - 10px)
-    min-height calc(100% - 5px)
+    min-height calc(100vh - var(--header-height) - 25px)
     flex-direction column
-    max-height calc(100vh - var(--header-height) - 10px)
+    max-height calc(100vh - var(--header-height) - 15px)
 
   &__content
     flex 1

@@ -62,11 +62,11 @@
     display flex
 
     &:nth-child(odd):not(&_active)
-      background-color rgba(255, 255, 255, 0.03)
+      background-color rgba(48, 196, 132, 0.03)
 
     &_active
       position relative
-      background-color #d0d0d0
+      background-color rgba(18, 136, 92, 1)
 
       &::before,
       &::after
@@ -79,7 +79,7 @@
 
       &::after
         z-index 1
-        background-color #fff
+        background-color rgba(18, 136, 92, 1)
         width calc(100% + 22px)
         box-shadow inset 2px 0 0 #000, 1px 0 0 1px rgba(0, 0, 0, 0.15) inset
 

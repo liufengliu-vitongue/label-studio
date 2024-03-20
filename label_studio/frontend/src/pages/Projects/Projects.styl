@@ -1,6 +1,8 @@
 .projects-page
-  min-height calc(100vh - var(--header-height))
-  background-color #FAFAFA
+  min-height calc(100vh - var(--header-height) - 15px)
+  background-color transparent
+  border-top-left-radius 24px
+  border-top-right-radius 24px
 
   &__loading
     width 100%
@@ -36,7 +38,7 @@
     padding 10px 40px
     justify-content flex-end
     box-sizing border-box
-    background-color #fafafa
+    // background-color #fafafa
 
   @media (min-width 1200px)
     &__list
